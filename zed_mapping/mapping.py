@@ -4,6 +4,8 @@ import numpy as np
 from pathlib import Path
 import os
 import yaml
+from struct import pack, unpack
+import open3d as o3d
 
 """
 
@@ -43,7 +45,7 @@ class MapBuilder(object):
         self.zed = zed
 
 
-    def get_pose(self):
+    def save_pose(self):
         zed = self.zed
         # Call zed.grab() each time before calling this function
         zed_pose = sl.Pose()
@@ -78,23 +80,60 @@ class MapBuilder(object):
         zed.retrieve_measure(depth_image, sl.MEASURE.DEPTH)
 
         # Write RGB and depth images to files
-        rgb_image.write(str(Path(rgb_directory) / ("%d.png" % image_index)))
+        rgb_image.write(str(Path(rgb_directory) / ("%d.jpeg" % image_index)))
         # depth_image.write(str(Path(depth_directory) / ("%d.png" % image_index)))
 
         # Write depth image as numpy array to preserve float32 values (distance in meters)
         np.save(Path(depth_directory) / ("%d.npy" % image_index), depth_image.get_data())
 
-    def write_point_cloud(self, pcd_output_directory, image_index):
+    def write_rgb_image(self, rgb_directory, image_index):
+        zed = self.zed
+        rgb_image = sl.Mat()
+        zed.retrieve_image(rgb_image, sl.VIEW.LEFT)
+
+        # Write RGB and depth images to files
+        rgb_image.write(str(Path(rgb_directory) / ("%d.jpeg" % image_index)))
+
+    def write_point_cloud(self, pcd_output_directory, image_index, use_h5=False):
         zed = self.zed
         point_cloud = sl.Mat()
         zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
-        pcd_np = point_cloud.get_data()
-        pcd_filename = Path(pcd_output_directory) / ("%d.npy" % image_index)
-        np.save(pcd_filename, pcd_np)
+        # get_data() gives a (720 X 1280 X 4) array
+        pcd_data = point_cloud.get_data().reshape((-1, 4))
 
-    def write_poses(self, pose_output_path='poses.txt'):
+        # Remove NaN/inf values
+        pcd_data = pcd_data[np.isfinite(pcd_data).any(axis=1)]
+
+        colors = zed_rgba_to_color_array(pcd_data[:, 3])
+
+        # Create open3d point cloud
+        pcd = o3d.geometry.PointCloud()
+        # pcd.points = o3d.utility.Vector3dVector(pcd_np[:,0:3])
+        # pcd.colors = o3d.utility.Vector3dVector(colors.astype(float) / 255)
+
+        # remove NaN/inf values
+        # pcd.remove_non_finite_points()
+
+        # pcd_filename = str(Path(pcd_output_directory) / ("%d.xyzrgb" % image_index))
+        # o3d.io.write_point_cloud(pcd_filename, pcd, compressed=True)
+
+        points = pcd_data[:,0:3]
+
+        pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
+        np.savez_compressed(pcd_filename, points=points, colors=colors)
+        # np.save(pcd_filename, pcd_np)
+
+
+    def write_poses(self, pose_output_path='poses.txt', replace_last_row=True):
         print("Writing pose history to '%s'" % pose_output_path)
         output_array = np.array(self.pose_history)
+
+        if replace_last_row:
+            # H264 compressed .svo files can give NaNs or wrong values in the last row of the pose history
+            # Replace last row of pose history with second-to-last row (except for time stamp)
+            last = output_array.shape[0] - 1
+            output_array[last,1:] = output_array[last-1,1:] # do not copy the timestamp (column 0)
+
         with open(pose_output_path, 'w') as output_file:
             np.savetxt(output_file, output_array, fmt='%f')
 
@@ -106,10 +145,10 @@ class MapBuilder(object):
         if not err:
             print("Error while saving ZED point cloud!")
 
-    def get_open3d_pointcloud(self):
-        zed = self.zed
-        points = sl.Mat()
-        zed.retrieve_measure(points, sl.MEASURE.XYZRGBA)
+    # def get_open3d_pointcloud(self):
+    #     zed = self.zed
+    #     points = sl.Mat()
+    #     zed.retrieve_measure(points, sl.MEASURE.XYZRGBA)
 
     def write_calib(self, calib_file_path="calib.yaml"):
         zed = self.zed
@@ -177,7 +216,6 @@ def process_video_file(input_path, output_directory, verbose=False):
 
     n_frames = zed.get_svo_number_of_frames()
     while not exit:
-        # if count % 1000 == 0:
         if zed.grab() == sl.ERROR_CODE.SUCCESS:
             print("\r[Processing frame %d of %d]" % (zed.get_svo_position(), n_frames), end='')
             # Read side by side frames stored in the SVO
@@ -186,8 +224,8 @@ def process_video_file(input_path, output_directory, verbose=False):
             # svo_position = zed.get_svo_position()
 
             # TO DO: PROCESS FRAME HERE
-            tracking.get_pose()
-            # tracking.write_images(rgb_directory=rgb_directory, depth_directory=depth_directory, image_index=count)
+            tracking.save_pose()
+            tracking.write_rgb_image(rgb_directory=rgb_directory, image_index=count)
             tracking.write_point_cloud(pcd_output_directory, image_index=count)
 
             count += 1
@@ -200,4 +238,33 @@ def process_video_file(input_path, output_directory, verbose=False):
     tracking.write_poses(str(poses_output_path))
     tracking.write_map(str(map_output_path))
     tracking.write_calib(str(calib_output_path))
+
+
+def zed_rgba_to_color_array(rgba_values):
+    """
+    Convert RGBA float32 values to an N by 3 array of RGB color values
+
+    :param rgba_values: ndarray
+    :return: ndarray
+    """
+    rgba_values = list(rgba_values)
+    # Convert float32 RGBA values to unsigned int, then to binary
+    # uint_values = [unpack('I', pack('f', rgba))[0] for rgba in rgba_values]
+    # Convert uint values to binary
+    # binary_values = [bin(ui)[2:] for ui in uint_values]
+    binary_values = [bin(unpack('I', pack('f', rgba))[0])[2:] for rgba in rgba_values]
+
+    # Separate out 32-bit binary representation into 4 separate 8-bit values for R,G,B,A
+    # alpha = [int(b[0:8], 2) for b in binary_values]
+    color_array = np.empty((len(rgba_values), 3), dtype=np.uint8)
+    for (i,b) in enumerate(binary_values):
+        color_array[i,2] = int(b[8:16], 2)  #blue
+        color_array[i,1] = int(b[16:24], 2) #green
+        color_array[i,0] = int(b[24:], 2)   #red
+    # blue = [int(b[8:16], 2) for b in binary_values]
+    # green = [int(b[16:24], 2) for b in binary_values]
+    # red = [int(b[24:], 2) for b in binary_values]
+
+    # color_array = np.array([red, green, blue], dtype=np.uint8).T
+    return color_array
 

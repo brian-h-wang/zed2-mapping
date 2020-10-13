@@ -4,10 +4,7 @@ from pathlib import Path
 import time
 
 if __name__ == "__main__":
-    # svo_file = "test.svo"
-    # fname = "HD720_SN29957051_16-29-25"
     directory = Path("data/ZED2/Sevanna/training")
-    # directory = Path("data/ZED2/Sevanna/testing")
     for fname in os.listdir(directory):
         p = Path(fname)
         if not p.suffix == '.svo':
