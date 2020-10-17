@@ -2,9 +2,13 @@ from zed_mapping.mapping import process_video_file
 import os
 from pathlib import Path
 import time
+import argparse
 
 if __name__ == "__main__":
-    directory = Path("data/ZED2/Sevanna/training")
+    parser = argparse.ArgumentParser(description="Process ZED SVO files, ")
+    parser.add_argument('--data_path', help='Path to directory containing multiple .svo files to process')
+    args = parser.parse_args()
+    directory = Path(args.data_path)
     for fname in os.listdir(directory):
         p = Path(fname)
         if not p.suffix == '.svo':

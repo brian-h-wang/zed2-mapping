@@ -16,7 +16,7 @@ Using the Positional Tracking API: https://www.stereolabs.com/docs/positional-tr
 
 """
 
-class MapBuilder(object):
+class ZedDataProcessor(object):
     """
     Class that handles:
     - Positional tracking
@@ -94,7 +94,24 @@ class MapBuilder(object):
         # Write RGB and depth images to files
         rgb_image.write(str(Path(rgb_directory) / ("%d.jpeg" % image_index)))
 
-    def write_point_cloud(self, pcd_output_directory, image_index, use_h5=False):
+    def write_point_cloud_npz(self, pcd_output_directory, image_index):
+        zed = self.zed
+        point_cloud = sl.Mat()
+        zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
+        # get_data() gives a (720 X 1280 X 4) array
+        pcd_data = point_cloud.get_data().reshape((-1, 4))
+
+        # Remove NaN/inf values
+        pcd_data = pcd_data[np.isfinite(pcd_data).any(axis=1)]
+
+        colors = zed_rgba_to_color_array(pcd_data[:, 3])
+
+        points = pcd_data[:,0:3]
+
+        pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
+        np.savez_compressed(pcd_filename, points=points, colors=colors)
+
+    def write_point_cloud_binary(self, pcd_output_directory, image_index):
         zed = self.zed
         point_cloud = sl.Mat()
         zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
@@ -107,7 +124,6 @@ class MapBuilder(object):
         colors = zed_rgba_to_color_array(pcd_data[:, 3])
 
         # Create open3d point cloud
-        pcd = o3d.geometry.PointCloud()
         # pcd.points = o3d.utility.Vector3dVector(pcd_np[:,0:3])
         # pcd.colors = o3d.utility.Vector3dVector(colors.astype(float) / 255)
 
@@ -117,11 +133,13 @@ class MapBuilder(object):
         # pcd_filename = str(Path(pcd_output_directory) / ("%d.xyzrgb" % image_index))
         # o3d.io.write_point_cloud(pcd_filename, pcd, compressed=True)
 
-        points = pcd_data[:,0:3]
+        points = pcd_data[:,0:3].astype(np.float32)
 
-        pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
-        np.savez_compressed(pcd_filename, points=points, colors=colors)
-        # np.save(pcd_filename, pcd_np)
+        points_filename = Path(pcd_output_directory) / ("%d.bin" % image_index)
+        colors_filename = Path(pcd_output_directory) / ("%d_colors.bin" % image_index)
+        points.tofile(points_filename)
+        colors.tofile(colors_filename)
+
 
 
     def write_poses(self, pose_output_path='poses.txt', replace_last_row=True):
@@ -166,7 +184,7 @@ class MapBuilder(object):
             yaml.dump(yaml_dict, yaml_file)
 
 
-def process_video_file(input_path, output_directory, verbose=False):
+def process_video_file(input_path, output_directory, verbose=False, n_frames_skip=0):
     output_directory = Path(output_directory)
     if not os.path.exists(output_directory):
         Path.mkdir(output_directory, parents=True)
@@ -188,7 +206,7 @@ def process_video_file(input_path, output_directory, verbose=False):
     # Create output directories for images
     rgb_directory = output_directory / Path("rgb")
     depth_directory = output_directory / Path("depth")
-    pcd_output_directory = output_directory / "pointcloud"
+    pcd_output_directory = output_directory / "pointcloud_bin"
     for dir in [rgb_directory, depth_directory, pcd_output_directory]:
         if not os.path.exists(dir):
             Path.mkdir(dir, parents=True)
@@ -207,7 +225,7 @@ def process_video_file(input_path, output_directory, verbose=False):
         return
 
     # Initialize positional tracking
-    tracking = MapBuilder(zed, verbose=verbose)
+    zed_data = ZedDataProcessor(zed, verbose=verbose)
 
     svo_image = sl.Mat()
     exit = False
@@ -224,9 +242,10 @@ def process_video_file(input_path, output_directory, verbose=False):
             # svo_position = zed.get_svo_position()
 
             # TO DO: PROCESS FRAME HERE
-            tracking.save_pose()
-            tracking.write_rgb_image(rgb_directory=rgb_directory, image_index=count)
-            tracking.write_point_cloud(pcd_output_directory, image_index=count)
+            zed_data.save_pose()
+            zed_data.write_rgb_image(rgb_directory=rgb_directory, image_index=count)
+            # tracking.write_point_cloud_npz(pcd_output_directory, image_index=count)
+            zed_data.write_point_cloud_binary(pcd_output_directory, image_index=count)
 
             count += 1
 
@@ -235,9 +254,9 @@ def process_video_file(input_path, output_directory, verbose=False):
             exit = True
 
     # Write outputs
-    tracking.write_poses(str(poses_output_path))
-    tracking.write_map(str(map_output_path))
-    tracking.write_calib(str(calib_output_path))
+    zed_data.write_poses(str(poses_output_path))
+    zed_data.write_map(str(map_output_path))
+    zed_data.write_calib(str(calib_output_path))
 
 
 def zed_rgba_to_color_array(rgba_values):
