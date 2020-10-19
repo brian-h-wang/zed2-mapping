@@ -132,7 +132,7 @@ class SVOFileProcessor(object):
         zed.close()
 
     def process_svo_rgb_and_pointcloud(self, rgb_directory="rgb", pointcloud_directory="pointcloud",
-                                       calib_file="calibration.yaml", n_frames_to_skip=1):
+                                       calib_file="calibration.yaml", n_frames_to_skip=1, sparsify=True):
         """
         Process the ZED SVO file and write to file:
             - Stereo point clouds, generated using performance quality
@@ -194,7 +194,10 @@ class SVOFileProcessor(object):
                 if svo_position >= next_frame:
                     print("\r[Processing frame %d of %d]" % (svo_position, n_frames), end='')
                     self.write_rgb_image(zed, rgb_directory=rgb_output_directory, image_index=image_counter)
-                    self.write_point_cloud_npz(zed, pcd_output_directory, image_index=image_counter)
+                    if sparsify:
+                        self.write_sparse_point_cloud_npz(zed, pcd_output_directory, image_index=image_counter, lines=64)
+                    else:
+                        self.write_point_cloud_npz(zed, pcd_output_directory, image_index=image_counter)
                     # self.write_point_cloud_binary(zed, pcd_output_directory, image_index=svo_position)
                     image_counter += 1
                     next_frame += n_frames_to_skip
@@ -238,6 +241,26 @@ class SVOFileProcessor(object):
 
         pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
         np.savez_compressed(pcd_filename, points=points, colors=colors)
+
+    def write_sparse_point_cloud_npz(self, zed, pcd_output_directory, image_index, lines=64):
+        point_cloud = sl.Mat()
+        zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
+        # get_data() gives a (720 X 1280 X 4) array
+        pcd_data = point_cloud.get_data()
+
+        pcd_data = pcd_data.reshape((-1,4))
+
+        # Remove NaN/inf values
+        pcd_data = pcd_data[np.isfinite(pcd_data).any(axis=1)]
+
+        colors = zed_rgba_to_color_array(pcd_data[:, 3])
+
+        points = pcd_data[:,0:3]
+
+        points_sparse, colors_sparse = sparsify_points(points, colors)
+
+        pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
+        np.savez_compressed(pcd_filename, points=points_sparse, colors=colors_sparse)
 
     def write_point_cloud_binary(self, zed, pcd_output_directory, image_index):
         point_cloud = sl.Mat()
@@ -437,3 +460,60 @@ def zed_rgba_to_color_array(rgba_values):
     color_array = np.array([red, green, blue], dtype=np.uint8).T
     return color_array
 
+def sparsify_points(points, colors, H=64, W=512, slice=1):
+    """
+    Adapted from KITTI sparsification code written by Yan Wang
+
+    :param H: the row num of depth map, could be 64(default), 32, 16
+    :param W: the col num of depth map
+    :param slice: output every slice lines
+    """
+    # Convert from camera coords to velodyne coords (x fwd, y left, z up)
+    velo_points = np.zeros((points.shape[0], 3))
+    velo_points[:,0] = points[:,2]
+    velo_points[:,1] = -points[:,0]
+    velo_points[:,2] = -points[:,1]
+
+    # fov = np.deg2rad(70)  # ZED 2 field of view, vertically
+    fov_deg = 70
+
+    # dtheta = np.radians(70 / H)
+    dtheta = np.radians(fov_deg) / H
+    # dtheta = np.radians(fov * 64.0 / H)
+    dphi = np.radians(90.0 / W)
+
+    x, y, z = velo_points[:, 0], velo_points[:, 1], velo_points[:, 2]
+
+    d = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+    r = np.sqrt(x ** 2 + y ** 2)
+    d[d == 0] = 0.000001
+    r[r == 0] = 0.000001
+    phi = np.radians(45.) - np.arcsin(y / r)
+    phi_ = (phi / dphi).astype(int)
+    phi_[phi_ < 0] = 0
+    phi_[phi_ >= W] = W - 1
+
+    # theta = np.radians(2.) - np.arcsin(z / d)
+    theta = np.arcsin(z / d)
+    theta_ = (theta / dtheta + H/2).astype(int)
+    # theta_[theta_ < 0] = 0
+    theta_[theta_ >= H] = H - 1
+
+    depth_map = - np.ones((H, W, 3))
+    depth_map[theta_, phi_, 0] = x
+    depth_map[theta_, phi_, 1] = y
+    depth_map[theta_, phi_, 2] = z
+    depth_map = depth_map[0::slice, :, :]
+    depth_map = depth_map.reshape((-1, 3))
+    depth_map = depth_map[depth_map[:, 0] != -1.0]
+
+    colors_sparse = - np.ones((H,W,3))
+    r, g, b = colors[:,0], colors[:,1], colors[:,2]
+    colors_sparse[theta_, phi_, 0] = r
+    colors_sparse[theta_, phi_, 1] = g
+    colors_sparse[theta_, phi_, 2] = b
+    colors_sparse = colors_sparse[0::slice, :, :]
+    colors_sparse = colors_sparse.reshape((-1, 3))
+    colors_sparse = colors_sparse[colors_sparse[:, 0] != -1.0]
+
+    return depth_map, colors_sparse

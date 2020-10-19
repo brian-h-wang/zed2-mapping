@@ -10,6 +10,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     directory = Path(args.data_path)
     n_skip = 5
+    sparsify = True
     for fname in os.listdir(directory):
         p = Path(fname)
         if not p.suffix == '.svo':
@@ -25,15 +26,12 @@ if __name__ == "__main__":
         else:
             output_name = p.stem
 
-        # TEMPORARY
-        if not fname.endswith("10-01-01.svo"):
-            continue
-
         output_directory = directory / output_name
 
         svo = SVOFileProcessor(svo_path=svo_file, output_path=output_directory)
         start_time = time.time()
         svo.process_svo_map_and_pose(map_file="map.obj", poses_file="poses.txt", n_frames_to_skip=n_skip)
         svo.process_svo_rgb_and_pointcloud(rgb_directory="rgb", pointcloud_directory="pointcloud",
-                                           calib_file="calibration.yaml", n_frames_to_skip=n_skip)
+                                           calib_file="calibration.yaml", n_frames_to_skip=n_skip,
+                                           sparsify=sparsify)
         print("Finished, runtime was %.2f" % (time.time() - start_time))

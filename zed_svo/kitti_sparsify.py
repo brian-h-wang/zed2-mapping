@@ -48,8 +48,12 @@ def pto_ang_map(velo_points, H=64, W=512, slice=1):
     :param W: the col num of depth map
     :param slice: output every slice lines
     """
+    # fov = np.deg2rad(70)  # ZED 2 field of view, vertically
+    fov_deg = 70
 
-    dtheta = np.radians(0.4 * 64.0 / H)
+    # dtheta = np.radians(70 / H)
+    dtheta = np.radians(fov_deg) / H
+    # dtheta = np.radians(fov * 64.0 / H)
     dphi = np.radians(90.0 / W)
 
     x, y, z, i = velo_points[:, 0], velo_points[:, 1], velo_points[:, 2], velo_points[:, 3]
@@ -63,10 +67,18 @@ def pto_ang_map(velo_points, H=64, W=512, slice=1):
     phi_[phi_ < 0] = 0
     phi_[phi_ >= W] = W - 1
 
-    theta = np.radians(2.) - np.arcsin(z / d)
-    theta_ = (theta / dtheta).astype(int)
-    theta_[theta_ < 0] = 0
+    # theta = np.radians(2.) - np.arcsin(z / d)
+    theta = np.arcsin(z / d)
+    theta_ = (theta / dtheta + H/2).astype(int)
+    # theta_[theta_ < 0] = 0
     theta_[theta_ >= H] = H - 1
+
+    print(theta_)
+    print(theta_.shape)
+    print(np.unique(theta_).size)
+    print(phi_)
+    print(phi_.shape)
+    print(np.unique(phi_).size)
 
     depth_map = - np.ones((H, W, 4))
     depth_map[theta_, phi_, 0] = x
