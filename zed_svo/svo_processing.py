@@ -41,7 +41,7 @@ class SVOFileProcessor(object):
         init_params = sl.InitParameters()
         init_params.set_from_svo_file(self.svo_path)
         init_params.camera_resolution = sl.RESOLUTION.HD720  # Use HD720 video mode (default fps: 60)
-        init_params.coordinate_system = sl.COORDINATE_SYSTEM.IMAGE  # Use ROS-style coordinate system
+        init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP_X_FWD # Use ROS-style coordinate system
         init_params.coordinate_units = sl.UNIT.METER  # Set units in meters
         return init_params
 
@@ -87,7 +87,8 @@ class SVOFileProcessor(object):
         # Initialize spatial mapping
         mapping_parameters = sl.SpatialMappingParameters()
         mapping_parameters.map_type = sl.SPATIAL_MAP_TYPE.FUSED_POINT_CLOUD
-        mapping_parameters.resolution_meter = mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.MEDIUM)
+        # mapping_parameters.resolution_meter = mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.MEDIUM)
+        mapping_parameters.resolution_meter = mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.HIGH)
 
         # Map at short range (3m) to maximize quality
         # This should reduce errors like points in the sky
@@ -126,9 +127,6 @@ class SVOFileProcessor(object):
         # Write outputs
         self.write_poses(pose_history, self.output_path / poses_file)
         self.write_map(zed, self.output_path / map_file)
-        # zed_data_processor.write_poses(str(poses_output_path))
-        # zed_data_processor.write_map(str(map_output_path))
-        # zed_data_processor.write_calib(str(calib_output_path))
         zed.close()
 
     def process_svo_rgb_and_pointcloud(self, rgb_directory="rgb", pointcloud_directory="pointcloud",
@@ -318,82 +316,6 @@ class SVOFileProcessor(object):
         with open(calib_file_path, 'w') as yaml_file:
             yaml.dump(yaml_dict, yaml_file)
 
-
-"""
-def process_video_file(input_path, output_directory, verbose=False, n_frames_skip=0):
-    output_directory = Path(output_directory)
-    if not os.path.exists(output_directory):
-        Path.mkdir(output_directory, parents=True)
-
-    # Create a ZED camera object
-    zed = sl.Camera()
-
-    # Set SVO path for playback
-    # input_path = sys.argv[1]
-    input_path = str(input_path)
-
-    # Set the init parameters for mapping and pose estimation (maximum quality depth)
-
-    # Create the init parameters for point cloud saving (performance depth setting, to simulate online depth)
-    init_params_performance = get_init_params(input_path)
-    init_params_performance.depth_mode = sl.DEPTH_MODE.PERFORMANCE
-
-    # Create output directories for images
-    rgb_directory = output_directory / Path("rgb")
-    depth_directory = output_directory / Path("depth")
-    pcd_output_directory = output_directory / "pointcloud_bin"
-    for dir in [rgb_directory, depth_directory, pcd_output_directory]:
-        if not os.path.exists(dir):
-            Path.mkdir(dir, parents=True)
-    # Output paths for pose, global map
-    poses_output_path = output_directory / "poses.txt"
-    map_output_path = output_directory / "map.obj"
-    calib_output_path = output_directory / "calibration.yaml"
-
-    # Open the ZED
-    zed = sl.Camera()
-    err = zed.open(init_params_mapping)
-
-    if err == sl.ERROR_CODE.INVALID_SVO_FILE:
-        print("Could not process SVO file!")
-        print("SVO file path: %s" % input_path)
-        return
-
-    # Initialize positional tracking
-    zed_data_processor = SVOFileProcessor(zed, verbose=verbose)
-
-    exit = False
-
-    count = 0
-
-    n_frames = zed.get_svo_number_of_frames()
-    while not exit:
-        if zed.grab() == sl.ERROR_CODE.SUCCESS:
-            print("\r[Processing frame %d of %d]" % (zed.get_svo_position(), n_frames), end='')
-            # Read side by side frames stored in the SVO
-            # zed.retrieve_image(svo_image, sl.VIEW.SIDE_BY_SIDE)
-            # Get frame count
-            # svo_position = zed.get_svo_position()
-
-            # TO DO: PROCESS FRAME HERE
-            zed_data_processor.save_pose()
-            zed_data_processor.write_rgb_image(rgb_directory=rgb_directory, image_index=count)
-            # tracking.write_point_cloud_npz(pcd_output_directory, image_index=count)
-            zed_data_processor.write_point_cloud_binary(pcd_output_directory, image_index=count)
-
-            count += 1
-
-        elif zed.grab() == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
-            print("Reached end of SVO file")
-            exit = True
-
-    # Write outputs
-    zed_data_processor.write_poses(str(poses_output_path))
-    zed_data_processor.write_map(str(map_output_path))
-    zed_data_processor.write_calib(str(calib_output_path))
-    """
-
-
 def get_zed_pose(zed, verbose=False):
     """
 
@@ -468,21 +390,13 @@ def sparsify_points(points, colors, H=64, W=512, slice=1):
     :param W: the col num of depth map
     :param slice: output every slice lines
     """
-    # Convert from camera coords to velodyne coords (x fwd, y left, z up)
-    velo_points = np.zeros((points.shape[0], 3))
-    velo_points[:,0] = points[:,2]
-    velo_points[:,1] = -points[:,0]
-    velo_points[:,2] = -points[:,1]
-
     # fov = np.deg2rad(70)  # ZED 2 field of view, vertically
     fov_deg = 70
 
-    # dtheta = np.radians(70 / H)
     dtheta = np.radians(fov_deg) / H
-    # dtheta = np.radians(fov * 64.0 / H)
     dphi = np.radians(90.0 / W)
 
-    x, y, z = velo_points[:, 0], velo_points[:, 1], velo_points[:, 2]
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
 
     d = np.sqrt(x ** 2 + y ** 2 + z ** 2)
     r = np.sqrt(x ** 2 + y ** 2)
@@ -496,7 +410,7 @@ def sparsify_points(points, colors, H=64, W=512, slice=1):
     # theta = np.radians(2.) - np.arcsin(z / d)
     theta = np.arcsin(z / d)
     theta_ = (theta / dtheta + H/2).astype(int)
-    # theta_[theta_ < 0] = 0
+    theta_[theta_ < 0] = 0
     theta_[theta_ >= H] = H - 1
 
     depth_map = - np.ones((H, W, 3))

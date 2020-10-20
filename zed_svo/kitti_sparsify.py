@@ -70,15 +70,10 @@ def pto_ang_map(velo_points, H=64, W=512, slice=1):
     # theta = np.radians(2.) - np.arcsin(z / d)
     theta = np.arcsin(z / d)
     theta_ = (theta / dtheta + H/2).astype(int)
-    # theta_[theta_ < 0] = 0
+    # theta_ = (theta / dtheta).astype(int)
+    print(np.sum(theta_ < 0))
+    theta_[theta_ < 0] = 0
     theta_[theta_ >= H] = H - 1
-
-    print(theta_)
-    print(theta_.shape)
-    print(np.unique(theta_).size)
-    print(phi_)
-    print(phi_.shape)
-    print(np.unique(phi_).size)
 
     depth_map = - np.ones((H, W, 4))
     depth_map[theta_, phi_, 0] = x

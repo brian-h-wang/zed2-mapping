@@ -7,10 +7,16 @@ import argparse
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process ZED SVO files, ")
     parser.add_argument('--data_path', help='Path to directory containing multiple .svo files to process')
+    parser.add_argument('--n_skip', help="Skip every n frames in the SVO file, for point cloud + image output",
+                        default=1, type=int)
     args = parser.parse_args()
+
     directory = Path(args.data_path)
-    n_skip = 5
+    n_skip = args.n_skip
     sparsify = True
+
+    if n_skip > 1:
+        print("[INFO] SVO processing will skip every %dth frame" % n_skip)
     for fname in os.listdir(directory):
         p = Path(fname)
         if not p.suffix == '.svo':
