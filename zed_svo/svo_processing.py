@@ -23,7 +23,7 @@ class SVOFileProcessor(object):
     """
 
     def __init__(self, svo_path, output_path, verbose=False,
-                 depth_quality_map=sl.DEPTH_MODE.ULTRA, depth_quality_pointcloud=sl.DEPTH_MODE.PERFORMANCE):
+                 depth_quality_map=sl.DEPTH_MODE.ULTRA, depth_quality_pointcloud=sl.DEPTH_MODE.ULTRA):
         self.svo_path = str(svo_path)
         self.output_path = Path(output_path)
         self.verbose = verbose
@@ -37,15 +37,18 @@ class SVOFileProcessor(object):
 
 
 
+
     def default_init_params(self):
         init_params = sl.InitParameters()
         init_params.set_from_svo_file(self.svo_path)
         init_params.camera_resolution = sl.RESOLUTION.HD720  # Use HD720 video mode (default fps: 60)
         init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP_X_FWD # Use ROS-style coordinate system
         init_params.coordinate_units = sl.UNIT.METER  # Set units in meters
+        init_params.depth_maximum_distance = 40.0
         return init_params
 
-    def process_svo_map_and_pose(self, map_file="map.obj", poses_file="poses.txt", n_frames_to_skip=1):
+    def process_svo_map_and_pose(self, map_file="map.obj", poses_file="poses.txt", n_frames_to_skip=1,
+                                 n_frames_to_trim=0):
         """
         Process the ZED SVO file and write to file:
             - A fused point cloud map
@@ -90,10 +93,11 @@ class SVOFileProcessor(object):
         # mapping_parameters.resolution_meter = mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.MEDIUM)
         mapping_parameters.resolution_meter = mapping_parameters.get_resolution_preset(sl.MAPPING_RESOLUTION.HIGH)
 
-        # Map at short range (3m) to maximize quality
+        # Map at short range (3.5m) to maximize quality
         # This should reduce errors like points in the sky
-        mapping_parameters.range_meter = mapping_parameters.get_range_preset(sl.MAPPING_RANGE.SHORT)
-        # mapping_parameters.range_meter = 2.5
+        # mapping_parameters.range_meter = mapping_parameters.get_range_preset(sl.MAPPING_RANGE.SHORT)
+        # mapping_parameters.range_meter = mapping_parameters.get_range_preset(sl.MAPPING_RANGE.LONG)
+        mapping_parameters.range_meter = mapping_parameters.get_range_preset(sl.MAPPING_RANGE.MEDIUM)
         zed.enable_spatial_mapping(mapping_parameters)
 
         pose_history = []
@@ -106,6 +110,8 @@ class SVOFileProcessor(object):
         svo_position = 0  # Keep a separate counter instead of using zed.get_svo_position() - svo position skips sometimes
         next_frame = 0  # keep track of next frame to process, for subsampling frames
 
+        last_frame = zed.get_svo_number_of_frames() - n_frames_to_trim
+
         # SVO processing loop
         exit = False
         while not exit:
@@ -113,7 +119,7 @@ class SVOFileProcessor(object):
             err = zed.grab()
             if err == sl.ERROR_CODE.SUCCESS:
 
-                if svo_position >= next_frame:
+                if svo_position < last_frame and svo_position >= next_frame:
                     print("\r[Processing frame %d of %d]" % (svo_position, n_frames), end='')
                     pose_history.append(get_zed_pose(zed))
                     next_frame += n_frames_to_skip
@@ -130,7 +136,8 @@ class SVOFileProcessor(object):
         zed.close()
 
     def process_svo_rgb_and_pointcloud(self, rgb_directory="rgb", pointcloud_directory="pointcloud",
-                                       calib_file="calibration.yaml", n_frames_to_skip=1, sparsify=True):
+                                       calib_file="calibration.yaml", n_frames_to_skip=1, n_frames_to_trim=0,
+                                       sparsify=True, skip_images=False):
         """
         Process the ZED SVO file and write to file:
             - Stereo point clouds, generated using performance quality
@@ -152,6 +159,8 @@ class SVOFileProcessor(object):
         n_frames_to_skip: int, default 0
             If set to 2 or higher, the image/pointcloud saving will skip frames. Use this to subsample the SVO output.
             For example, skip_frames=2 will save the image/pointcloud from every other frame.
+        skip_images: bool
+            If True, will skip writing images (write point clouds only)
 
         Returns
         -------
@@ -177,11 +186,14 @@ class SVOFileProcessor(object):
 
         n_frames = zed.get_svo_number_of_frames()
 
+
         assert type(n_frames_to_skip) == int and (1 <= n_frames_to_skip < n_frames), \
             "n_frames_to_skip parameter must be an int between 1 and number of frames in the SVO."
         svo_position = 0  # Keep a separate counter instead of using zed.get_svo_position() - svo position skips sometimes
         image_counter = 0  # Tracks how many images have been written
         next_frame = 0  # keep track of next frame to process, for subsampling frames
+
+        last_frame = zed.get_svo_number_of_frames() - n_frames_to_trim
 
         # SVO processing loop
         exit = False
@@ -189,17 +201,20 @@ class SVOFileProcessor(object):
             err = zed.grab()
             if err == sl.ERROR_CODE.SUCCESS:
 
-                if svo_position >= next_frame:
+                if svo_position < last_frame and svo_position >= next_frame:
                     print("\r[Processing frame %d of %d]" % (svo_position, n_frames), end='')
-                    self.write_rgb_image(zed, rgb_directory=rgb_output_directory, image_index=image_counter)
+                    if not skip_images:
+                        self.write_rgb_image(zed, rgb_directory=rgb_output_directory, image_index=image_counter)
                     if sparsify:
-                        self.write_sparse_point_cloud_npz(zed, pcd_output_directory, image_index=image_counter, lines=64)
+                        self.write_sparse_point_cloud_npz(zed, pcd_output_directory, image_index=image_counter,
+                                                          lines=128, max_range=15)
                     else:
                         self.write_point_cloud_npz(zed, pcd_output_directory, image_index=image_counter)
                     # self.write_point_cloud_binary(zed, pcd_output_directory, image_index=svo_position)
                     image_counter += 1
                     next_frame += n_frames_to_skip
                 svo_position += 1
+
 
             elif err == sl.ERROR_CODE.END_OF_SVOFILE_REACHED:
                 print("Pointcloud saver: Reached end of SVO file")
@@ -240,7 +255,7 @@ class SVOFileProcessor(object):
         pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
         np.savez_compressed(pcd_filename, points=points, colors=colors)
 
-    def write_sparse_point_cloud_npz(self, zed, pcd_output_directory, image_index, lines=64):
+    def write_sparse_point_cloud_npz(self, zed, pcd_output_directory, image_index, lines=64, max_range=0):
         point_cloud = sl.Mat()
         zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
         # get_data() gives a (720 X 1280 X 4) array
@@ -250,12 +265,18 @@ class SVOFileProcessor(object):
 
         # Remove NaN/inf values
         pcd_data = pcd_data[np.isfinite(pcd_data).any(axis=1)]
-
-        colors = zed_rgba_to_color_array(pcd_data[:, 3])
+        colors_f32 = pcd_data[:,3]
 
         points = pcd_data[:,0:3]
 
-        points_sparse, colors_sparse = sparsify_points(points, colors)
+        # limit max range
+        if max_range > 0:
+            below_max = get_points_within_max_range(points, max_range)
+            points = points[below_max,:]
+            colors_f32 = colors_f32[below_max]
+
+        colors = zed_rgba_to_color_array(colors_f32)
+        points_sparse, colors_sparse = sparsify_points(points, colors, H=lines)
 
         pcd_filename = Path(pcd_output_directory) / ("%d.npz" % image_index)
         np.savez_compressed(pcd_filename, points=points_sparse, colors=colors_sparse)
@@ -375,11 +396,17 @@ def zed_rgba_to_color_array(rgba_values):
 
     # Separate out 32-bit binary representation into 4 separate 8-bit values for R,G,B,A
     # alpha = [int(b[0:8], 2) for b in binary_values]
-    blue = [int(b[8:16], 2) for b in binary_values]
-    green = [int(b[16:24], 2) for b in binary_values]
-    red = [int(b[24:], 2) for b in binary_values]
+    # blue = [int(b[8:16], 2) for b in binary_values]
+    # green = [int(b[16:24], 2) for b in binary_values]
+    # red = [int(b[24:], 2) for b in binary_values]
 
-    color_array = np.array([red, green, blue], dtype=np.uint8).T
+    # color_array = np.array([red, green, blue], dtype=np.uint8).T
+
+    color_array = np.zeros((len(binary_values), 3), dtype=np.uint8)
+    for i, b in enumerate(binary_values):
+        color_array[i,2] = int(b[8:16], 2)
+        color_array[i,1] = int(b[16:24], 2)
+        color_array[i,0] = int(b[24:], 2)
     return color_array
 
 def sparsify_points(points, colors, H=64, W=512, slice=1):
@@ -389,6 +416,7 @@ def sparsify_points(points, colors, H=64, W=512, slice=1):
     :param H: the row num of depth map, could be 64(default), 32, 16
     :param W: the col num of depth map
     :param slice: output every slice lines
+    :param max_range: depth points above this value will be removed. set to 0 to disable
     """
     # fov = np.deg2rad(70)  # ZED 2 field of view, vertically
     fov_deg = 70
@@ -400,6 +428,7 @@ def sparsify_points(points, colors, H=64, W=512, slice=1):
 
     d = np.sqrt(x ** 2 + y ** 2 + z ** 2)
     r = np.sqrt(x ** 2 + y ** 2)
+
     d[d == 0] = 0.000001
     r[r == 0] = 0.000001
     phi = np.radians(45.) - np.arcsin(y / r)
@@ -431,3 +460,9 @@ def sparsify_points(points, colors, H=64, W=512, slice=1):
     colors_sparse = colors_sparse[colors_sparse[:, 0] != -1.0]
 
     return depth_map, colors_sparse
+
+def get_points_within_max_range(points, max_range):
+    x, y = points[:, 0], points[:, 1]
+    r = np.sqrt(x ** 2 + y ** 2)
+    return r <= max_range
+
